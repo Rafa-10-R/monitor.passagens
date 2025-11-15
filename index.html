@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="description" content="Monitor de passagens aéreas CGH/GRU ↔ CGB com alertas de preço">
+    <title>Monitor de Passagens</title>
+    
+    <!-- PWA Meta Tags -->
+    <link rel="manifest" href="data:application/json;base64,ewogICJuYW1lIjogIk1vbml0b3IgZGUgUGFzc2FnZW5zIiwKICAic2hvcnRfbmFtZSI6ICJQYXNzYWdlbnMiLAogICJzdGFydF91cmwiOiAiLiIsCiAgImRpc3BsYXkiOiAic3RhbmRhbG9uZSIsCiAgImJhY2tncm91bmRfY29sb3IiOiAiI2ZmZmZmZiIsCiAgInRoZW1lX2NvbG9yIjogIiMyNTYzZWIiLAogICJvcmllbnRhdGlvbiI6ICJwb3J0cmFpdCIsCiAgImljb25zIjogWwogICAgewogICAgICAic3JjIjogImRhdGE6aW1hZ2Uvc3ZnK3htbCwlM0NzdmcgeG1sbnM9J2h0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnJyB2aWV3Qm94PScwIDAgMTAwIDEwMCclM0UlM0NyZWN0IHdpZHRoPScxMDAnIGhlaWdodD0nMTAwJyBmaWxsPSclMjMyNTYzZWInLyUzRSUzQ3RleHQgeD0nNTAlMjUnIHk9JzUwJTI1JyBmb250LXNpemU9JzUwJyB0ZXh0LWFuY2hvcj0nbWlkZGxlJyBkb21pbmFudC1iYXNlbGluZT0nbWlkZGxlJyBmaWxsPSd3aGl0ZSclM0UlRjAlOUYlOTIlQkElM0MvdGV4dCUzRSUzQy9zdmclM0UiLAogICAgICAic2l6ZXMiOiAiNTEyeDUxMiIsCiAgICAgICJ0eXBlIjogImltYWdlL3N2Zyt4bWwiCiAgICB9CiAgXQp9">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%232563eb'/%3E%3Ctext x='50%25' y='50%25' font-size='50' text-anchor='middle' dominant-baseline='middle' fill='white'%3E✈️%3C/text%3E%3C/svg%3E">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+        .animate-pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script>
+        // Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('data:text/javascript;base64,c2VsZi5hZGRFdmVudExpc3RlbmVyKCdpbnN0YWxsJywgZnVuY3Rpb24oZSkge30pOw==')
+                .catch(err => console.log('SW registration failed'));
+        }
+
+        const targetPrice = 400;
+        
+        const routes = [
+            { id: 1, origin: 'CGH', dest: 'CGB', date: '2025-12-23', dateDisplay: '23/12/2025' },
+            { id: 2, origin: 'GRU', dest: 'CGB', date: '2025-12-23', dateDisplay: '23/12/2025' },
+            { id: 3, origin: 'CGH', dest: 'CGB', date: '2025-12-24', dateDisplay: '24/12/2025' },
+            { id: 4, origin: 'GRU', dest: 'CGB', date: '2025-12-24', dateDisplay: '24/12/2025' },
+            { id: 5, origin: 'CGB', dest: 'CGH', date: '2026-01-03', dateDisplay: '03/01/2026' },
+            { id: 6, origin: 'CGB', dest: 'CGH', date: '2026-01-04', dateDisplay: '04/01/2026' },
+            { id: 7, origin: 'CGB', dest: 'GRU', date: '2026-01-03', dateDisplay: '03/01/2026' },
+            { id: 8, origin: 'CGB', dest: 'GRU', date: '2026-01-04', dateDisplay: '04/01/2026' },
+        ];
+
+        let prices = {};
+        let priceHistory = {};
+        let lastCheck = null;
+        let deferredPrompt = null;
+
+        // Carregar dados salvos
+        function loadData() {
+            const savedPrices = localStorage.getItem('flightPrices');
+            const savedHistory = localStorage.getItem('priceHistory');
+            const savedLastCheck = localStorage.getItem('lastCheck');
+            
+            if (savedPrices) prices = JSON.parse(savedPrices);
+            if (savedHistory) priceHistory = JSON.parse(savedHistory);
+            if (savedLastCheck) lastCheck = savedLastCheck;
+        }
+
+        // Salvar dados
+        function saveData() {
+            localStorage.setItem('flightPrices', JSON.stringify(prices));
+            localStorage.setItem('priceHistory', JSON.stringify(priceHistory));
+            if (lastCheck) localStorage.setItem('lastCheck', lastCheck);
+        }
+
+        // Buscar rota
+        function searchRoute(route) {
+            const formatDate = (date) => date.replace(/-/g, '');
+            const depDate = formatDate(route.date);
+
+            const urls = {
+                latam: `https://www.latamairlines.com/br/pt/oferta-voos?origin=${route.origin}&inbound=null&outbound=${depDate}&destination=${route.dest}&adt=1&chd=0&inf=0&trip=OW&cabin=Y&redemption=false&sort=RECOMMENDED`,
+                gol: `https://www.voegol.com.br/comprar/selecao-voo?ori=${route.origin}&des=${route.dest}&adt=1&chd=0&inf=0&data-ida=${route.date}&tipo-voo=OW`,
+                azul: `https://www.voeazul.com.br/br/pt/home/comprar-passagens?origin=${route.origin}&destination=${route.dest}&departure=${route.date}&adults=1&tripType=one-way`,
+                zupper: `https://www.voeazul.com.br/br/pt/home/comprar-passagens?origin=${route.origin}&destination=${route.dest}&departure=${route.date}&adults=1&tripType=one-way`
+            };
+
+            Object.values(urls).forEach(url => window.open(url, '_blank'));
+
+            lastCheck = new Date().toLocaleString('pt-BR');
+            saveData();
+            render();
+        }
+
+        // Buscar todas as rotas
+        function searchAllRoutes() {
+            if (!confirm('Isso abrirá 32 abas (8 rotas × 4 companhias). Continuar?')) return;
+            
+            routes.forEach((route, index) => {
+                setTimeout(() => searchRoute(route), index * 1000);
+            });
+        }
+
+        // Mostrar alerta de preço
+        function showPriceAlert(route, airline, price) {
+            alert(`🎉 PREÇO BAIXO ENCONTRADO!\n\n${route.origin} → ${route.dest}\nData: ${route.dateDisplay}\nCompanhia: ${airline.toUpperCase()}\nPreço: R$ ${price.toFixed(2)}\n\n✅ Abaixo do alerta de R$ ${targetPrice}!`);
+            
+            if ('vibrate' in navigator) {
+                navigator.vibrate([200, 100, 200, 100, 200]);
+            }
+            
+            try {
+                const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSl+zPLTgjMGHmS57OihUhELTKXh8bllHgU2jdXzx3YpBSh+yPHaizsIGGS56+mjUxELTKXh8bllHgU2jdXzx3YpBSh+yPHaizsIGGS56+mjUxELTKXh8bllHgU2jdXzx3YpBSh+yPHaizsIGGS56+mjUxELTKXh8bllHgU2jdXzx3YpBSh+yPHaizsIGGS56+mjUxELTKXh8bllHgU2jdXzx3YpBSh+yPHaizsIGGS56+mjUxELTKXh8bllHgU2jdXzx3YpBSh+yPHaizsIGGS56+mjUxELTKXh8bllHgU2jdXzx3YpBSh+yPHaizsIGGS56+mjUxELTKXh8bllHgU2jdXzx3YpBSh+yPHaizsIGGS56+mjUxELTKXh8bllHgU2jdXzx3YpBQ==');
+                audio.play().catch(() => {});
+            } catch (e) {}
+        }
+
+        // Atualizar preço
+        function updatePrice(routeId, airline, value) {
+            const priceValue = parseFloat(value);
+            if (isNaN(priceValue) || priceValue <= 0) return;
+
+            const key = `${routeId}-${airline}`;
+            prices[key] = priceValue;
+
+            const historyKey = key;
+            if (!priceHistory[historyKey]) priceHistory[historyKey] = [];
+            priceHistory[historyKey].push({
+                price: priceValue,
+                timestamp: new Date().toLocaleString('pt-BR')
+            });
+            priceHistory[historyKey] = priceHistory[historyKey].slice(-5);
+
+            saveData();
+
+            if (priceValue < targetPrice) {
+                const route = routes.find(r => r.id === routeId);
+                showPriceAlert(route, airline, priceValue);
+            }
+
+            render();
+        }
+
+        // Obter menor preço
+        function getLowestPrice(routeId) {
+            const airlines = ['latam', 'gol', 'azul', 'zupper'];
+            const routePrices = airlines
+                .map(airline => prices[`${routeId}-${airline}`])
+                .filter(p => p !== undefined);
+            
+            return routePrices.length > 0 ? Math.min(...routePrices) : null;
+        }
+
+        // Limpar dados
+        function clearData() {
+            if (confirm('Deseja limpar todos os preços registrados?')) {
+                prices = {};
+                priceHistory = {};
+                lastCheck = null;
+                localStorage.clear();
+                render();
+            }
+        }
+
+        // Instalar PWA
+        function installPWA() {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult) => {
+                    deferredPrompt = null;
+                    render();
+                });
+            }
+        }
+
+        // Renderizar app
+        function render() {
+            const isInstalled = window.matchMedia('(display-mode: standalone)').matches;
+            const showInstallBanner = deferredPrompt && !isInstalled;
+
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                <div class="min-h-screen bg-gradient-to-br from-blue-600 to-purple-700 p-4">
+                    <div class="max-w-6xl mx-auto">
+                        
+                        ${showInstallBanner ? `
+                        <div class="bg-green-500 text-white rounded-xl shadow-2xl p-4 mb-4 flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                                </svg>
+                                <div>
+                                    <div class="font-bold">Instalar App na Tela Inicial</div>
+                                    <div class="text-sm opacity-90">Acesso rápido e alertas melhores!</div>
+                                </div>
+                            </div>
+                            <button onclick="installPWA()" class="bg-white text-green-600 px-4 py-2 rounded-lg font-semibold hover:bg-green-50 transition">
+                                Instalar
+                            </button>
+                        </div>
+                        ` : ''}
+
+                        ${isInstalled ? `
+                        <div class="bg-green-500 text-white rounded-xl shadow-2xl p-4 mb-4 flex items-center gap-3">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path>
+                            </svg>
+                            <div>
+                                <div class="font-bold">✅ App Instalado!</div>
+                                <div class="text-sm opacity-90">Alertas pop-up ativos</div>
+                            </div>
+                        </div>
+                        ` : ''}
+
+                        <div class="bg-white rounded-xl shadow-2xl p-6 mb-6">
+                            <div class="flex items-center justify-between mb-4">
+                                <div>
+                                    <h1 class="text-3xl font-bold text-gray-800">Monitor de Passagens</h1>
+                                    <p class="text-gray-600 mt-1">CGH/GRU ↔ CGB | Natal e Ano Novo 2025/2026</p>
+                                </div>
+                                <div class="text-right">
+                                    <div class="text-sm text-gray-500">Alerta de preço</div>
+                                    <div class="text-2xl font-bold text-green-600">R$ ${targetPrice}</div>
+                                </div>
+                            </div>
+
+                            ${lastCheck ? `
+                            <div class="flex items-center gap-2 text-sm text-gray-600 bg-blue-50 p-3 rounded-lg mb-4">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                Última verificação: ${lastCheck}
+                            </div>
+                            ` : ''}
+
+                            <div class="flex gap-3">
+                                <button onclick="searchAllRoutes()" class="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition">
+                                    🔍 Buscar Todas as Rotas
+                                </button>
+                                <button onclick="clearData()" class="bg-red-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-red-700 transition">
+                                    Limpar
+                                </button>
+                            </div>
+
+                            <div class="mt-4 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                                <div class="text-sm text-gray-700">
+                                    <strong>💡 Como usar:</strong> Clique em "Buscar Rota", veja os preços nos sites, volte aqui e registre. Quando digitar um preço abaixo de R$ 400, você receberá um <strong>alerta pop-up instantâneo</strong> com vibração!
+                                </div>
+                            </div>
+
+                            ${!isInstalled && !showInstallBanner ? `
+                            <div class="mt-4 p-3 bg-purple-50 rounded-lg border border-purple-200">
+                                <div class="text-sm text-gray-700">
+                                    <strong>📱 Instalar:</strong> No Chrome, toque no menu (⋮) e selecione "Adicionar à tela inicial"
+                                </div>
+                            </div>
+                            ` : ''}
+                        </div>
+
+                        <div class="space-y-4">
+                            ${routes.map(route => {
+                                const lowestPrice = getLowestPrice(route.id);
+                                const isBelowTarget = lowestPrice && lowestPrice < targetPrice;
+
+                                return `
+                                <div class="bg-white rounded-xl shadow-lg p-6 ${isBelowTarget ? 'ring-4 ring-green-400 animate-pulse' : ''}">
+                                    <div class="flex flex-col lg:flex-row lg:items-center gap-4 mb-4">
+                                        <div class="flex-1">
+                                            <div class="flex items-center gap-3 mb-2">
+                                                <div class="text-2xl font-bold text-gray-800">
+                                                    ${route.origin} → ${route.dest}
+                                                </div>
+                                                ${isBelowTarget ? `
+                                                <div class="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-semibold">
+                                                    ⬇️ ABAIXO DE R$ ${targetPrice}!
+                                                </div>
+                                                ` : ''}
+                                            </div>
+                                            <div class="text-gray-600">${route.dateDisplay}</div>
+                                            ${lowestPrice ? `
+                                            <div class="mt-2">
+                                                <span class="text-gray-600 text-sm">Menor preço: </span>
+                                                <span class="text-2xl font-bold text-blue-600">R$ ${lowestPrice.toFixed(2)}</span>
+                                            </div>
+                                            ` : ''}
+                                        </div>
+                                        <button onclick="searchRoute(${JSON.stringify(route).replace(/"/g, '&quot;')})" class="bg-gradient-to-r from-blue-600 to-purple-600 text-white px-6 py-3 rounded-lg font-semibold hover:from-blue-700 hover:to-purple-700 transition whitespace-nowrap">
+                                            🔗 Buscar Rota
+                                        </button>
+                                    </div>
+
+                                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                                        ${['latam', 'gol', 'azul', 'zupper'].map(airline => {
+                                            const key = `${route.id}-${airline}`;
+                                            const currentPrice = prices[key];
+                                            const history = priceHistory[key] || [];
+
+                                            return `
+                                            <div>
+                                                <label class="block text-xs font-semibold text-gray-600 mb-1 uppercase">${airline}</label>
+                                                <div class="flex items-center gap-2">
+                                                    <span class="text-gray-600">R$</span>
+                                                    <input 
+                                                        type="number" 
+                                                        placeholder="0.00" 
+                                                        step="0.01"
+                                                        value="${currentPrice || ''}"
+                                                        onchange="updatePrice(${route.id}, '${airline}', this.value)"
+                                                        class="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${currentPrice && currentPrice < targetPrice ? 'border-green-500 bg-green-50 font-bold' : 'border-gray-300'}"
+                                                    />
+                                                </div>
+                                                ${history.length > 0 ? `
+                                                <div class="mt-1 text-xs text-gray-500">
+                                                    Último: R$ ${history[history.length - 1].price.toFixed(2)}
+                                                </div>
+                                                ` : ''}
+                                            </div>
+                                            `;
+                                        }).join('')}
+                                    </div>
+                                </div>
+                                `;
+                            }).join('')}
+                        </div>
+
+                        <div class="bg-white rounded-xl shadow-2xl p-6 mt-6">
+                            <h2 class="text-xl font-bold text-gray-800 mb-4">💰 Resumo das Rotas</h2>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                ${routes.map(route => {
+                                    const lowestPrice = getLowestPrice(route.id);
+                                    return `
+                                    <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                                        <div>
+                                            <div class="font-semibold text-gray-800">${route.origin} → ${route.dest}</div>
+                                            <div class="text-sm text-gray-600">${route.dateDisplay}</div>
+                                        </div>
+                                        <div class="text-right">
+                                            ${lowestPrice ? `
+      
